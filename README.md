@@ -1,4 +1,4 @@
-# GLACIER: A New Adaptive Fuzzy Hashing Algorithm
+![Alt text](https://i.ibb.co/gVSWXMZ/phonto.jpg)
 
 GLACIER (Grouped Locality-sensitive Adaptive Chunking with Integrated Efficient Rolling) is an adaptive fuzzy hashing algorithm which provides resilient and efficient similarity detection between samples. It leverages adaptive chunking and parallel processing to improve upon existing fuzzy hashing algorithms like **SSDEEP** and **TLSH**.
 
