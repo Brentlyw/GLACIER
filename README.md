@@ -60,9 +60,3 @@ python glacier.py -scan {filepath/folderpath}
 
 - **Potentially Larger Signatures**: Adaptive chunking via Rabin fingerprinting may result in a long hash for files >1MB.
 
-
-## Consolidate.py
-
-### Features:
-1. **Consolidation**: Calling this script with -auto will automatically consolidate, rename, and vaccum your signature database.
-3. **Threshold Customization**: Users can specify via args the similarity threshold (using --threshold), or take manual control of the grouping process.
