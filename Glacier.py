@@ -16,6 +16,7 @@ def hash_chunk(chunk):
         h = (h * 31 + byte) & 0xFFFFFFFF
     return h.to_bytes(4, 'big')
 
+
 class RabinFingerprint:
     def __init__(self, poly=0x3DA3358B4DC173, window_size=64):
         self.poly = poly
@@ -39,6 +40,7 @@ class RabinFingerprint:
     def is_chunk_boundary(self):
         return (self.hash & self.mask) == 0
 
+
 class ContentDefinedChunker:
     def __init__(self, min_chunk=2048, max_chunk=65536, fingerprint=None):
         self.min_chunk = min_chunk
@@ -50,7 +52,7 @@ class ContentDefinedChunker:
         start = 0
         data_len = len(data)
         for i in range(data_len):
-            fingerprint = self.fingerprint.update(data[i])
+            self.fingerprint.update(data[i])
             chunk_size = i - start + 1
 
             if chunk_size >= self.min_chunk and (self.fingerprint.is_chunk_boundary() or chunk_size >= self.max_chunk):
@@ -62,8 +64,10 @@ class ContentDefinedChunker:
         
         return chunks
 
+
 class FuzzyHasher:
     __slots__ = ['min_chunk', 'max_chunk', 'window_size', 'debug', 'chunker']
+
     def __init__(self, min_chunk=2048, max_chunk=65536, window_size=64, debug=False):
         self.min_chunk = min_chunk
         self.max_chunk = max_chunk
@@ -77,7 +81,6 @@ class FuzzyHasher:
             normalized = ' '.join(text.replace('\r\n', '\n').split())
             return normalized.encode('utf-8')
         except UnicodeDecodeError:
-            # Non-text data
             return data
     
     def _chunk_data(self, data):
@@ -91,7 +94,7 @@ class FuzzyHasher:
             if file_size == 0:
                 if self.debug:
                     print("Warning: Empty file. Skipping.")
-                return (file_path, None)
+                return None
             with open(file_path, 'rb') as f:
                 with mmap.mmap(f.fileno(), length=0, access=mmap.ACCESS_READ) as mm:
                     data = mm[:]
@@ -103,18 +106,17 @@ class FuzzyHasher:
                 h_hex = h_bytes.hex()
                 if self.debug:
                     print(f"Single chunk hash: {h_hex}")
-                return (file_path, h_hex)
+                return h_hex
             chunks = self._chunk_data(data)
             chunk_hashes = [hash_chunk(chunk).hex() for chunk, _ in chunks]
             signature = ''.join(chunk_hashes)
-            return (file_path, signature)
+            return signature
         except Exception as e:
             if self.debug:
                 print(f"Error processing {file_path}: {str(e)}")
-            return (file_path, None)
+            return None
     
     def compare_signatures(self, sig1, sig2):
-        """Compare two fuzzy hash signatures using sequence matching (edit distance-based)."""
         if not sig1 or not sig2:
             return 0.0
         try:
@@ -130,20 +132,11 @@ class FuzzyHasher:
             print("No signature to display.")
             return
         print(f"\n{label}:")
-        # 4x grid
         for i in range(0, len(sig), 32):
             row = sig[i:i+32]
             print(' '.join(row[j:j+8] for j in range(0, len(row), 8)))
     
     def create_database(self, folder_path, db_name='Sigs.db', max_workers=None, batch_size=10000):
-        """
-        Creates a signature database from the specified folder.
-        Parameters:
-        - folder_path: Path to the folder containing files to hash.
-        - db_name: Name of the SQLite database file.
-        - max_workers: Number of worker processes.
-        - batch_size: Number of records to insert per transaction.
-        """
         if max_workers is None:
             max_workers = multiprocessing.cpu_count()
         file_paths = [
@@ -153,12 +146,10 @@ class FuzzyHasher:
         ]
         total_files = len(file_paths)
         print(f"Found {total_files} files. Starting signature computation...")
-        # Initialize the database connection and settings
         conn = sqlite3.connect(db_name)
         cursor = conn.cursor()
         cursor.execute('''CREATE TABLE IF NOT EXISTS signatures
-                          (filepath TEXT PRIMARY KEY, signature TEXT)''')
-        # Optimize SQLite for bulk inserts
+                          (signature TEXT PRIMARY KEY)''')
         cursor.execute("PRAGMA synchronous = OFF;")
         cursor.execute("PRAGMA journal_mode = MEMORY;")
         cursor.execute("PRAGMA cache_size = 100000;")
@@ -168,14 +159,13 @@ class FuzzyHasher:
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = {executor.submit(hasher.calculate_signature, fp): fp for fp in file_paths}
                 for future in tqdm(as_completed(futures), total=total_files, desc="Hashing files"):
-                    file_path = futures[future]
                     try:
                         result = future.result()
-                        if result and result[1]:
-                            yield result
+                        if result:
+                            yield (result,)
                     except Exception as e:
                         if self.debug:
-                            print(f"Error processing {file_path}: {str(e)}")
+                            print(f"Error processing a file: {str(e)}")
         batch = []
         inserted_count = 0
         try:
@@ -183,7 +173,7 @@ class FuzzyHasher:
                 batch.append(record)
                 if len(batch) >= batch_size:
                     cursor.executemany(
-                        "INSERT OR REPLACE INTO signatures (filepath, signature) VALUES (?, ?)",
+                        "INSERT OR REPLACE INTO signatures (signature) VALUES (?)",
                         batch
                     )
                     conn.commit()
@@ -193,7 +183,7 @@ class FuzzyHasher:
                     batch.clear()
             if batch:
                 cursor.executemany(
-                    "INSERT OR REPLACE INTO signatures (filepath, signature) VALUES (?, ?)",
+                    "INSERT OR REPLACE INTO signatures (signature) VALUES (?)",
                     batch
                 )
                 conn.commit()
@@ -209,16 +199,16 @@ class FuzzyHasher:
     def scan_file(self, file_path, db_name='Sigs.db', threshold=0.5):
         try:
             signature = self.calculate_signature(file_path)
-            if not signature[1]:
+            if not signature:
                 return False, []
             conn = sqlite3.connect(db_name)
             cursor = conn.cursor()
-            cursor.execute("SELECT filepath, signature FROM signatures")
+            cursor.execute("SELECT signature FROM signatures")
             results = []
-            for db_filepath, db_signature in cursor.fetchall():
-                similarity = self.compare_signatures(signature[1], db_signature)
+            for (db_signature,) in cursor.fetchall():
+                similarity = self.compare_signatures(signature, db_signature)
                 if similarity > threshold:
-                    results.append((db_filepath, similarity))
+                    results.append((db_signature, similarity))
             conn.close()
             return bool(results), results
         except Exception as e:
@@ -245,8 +235,8 @@ class FuzzyHasher:
             if matched:
                 matched_files += 1
                 print(f"Match found: {file_path}")
-                for match_path, match_similarity in sorted(results, key=lambda x: x[1], reverse=True):
-                    print(f"  {match_path}: {match_similarity:.2%} similarity")
+                for match_signature, match_similarity in sorted(results, key=lambda x: x[1], reverse=True):
+                    print(f"  Similarity: {match_similarity:.2%}")
             return
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(process_file, fp): fp for fp in file_paths}
@@ -256,7 +246,7 @@ class FuzzyHasher:
                 except Exception as e:
                     error_files += 1
                     if self.debug:
-                        print(f"Error processing {futures[future]}: {str(e)}")
+                        print(f"Error processing a file: {str(e)}")
         print("\nScan Summary:")
         print(f"Total files scanned: {total_files}")
         print(f"Files with matches: {matched_files}")
@@ -267,8 +257,9 @@ class FuzzyHasher:
         else:
             print("No files scanned.")
 
+
 def main():
-    parser = argparse.ArgumentParser(description="GLACIER: A new fuzzy hashing algo.")
+    parser = argparse.ArgumentParser(description="GLACIER: A new fuzzy hashing algorithm.")
     parser.add_argument('files', nargs='*', help='File(s) to hash/compare')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
     parser.add_argument('-db', metavar='FOLDER', help='Create a new database from the specified folder')
@@ -277,41 +268,67 @@ def main():
     parser.add_argument('--threshold', type=float, default=0.5, help='Similarity threshold for matching (default: 0.5)')
     args = parser.parse_args()
     hasher = FuzzyHasher(debug=args.debug)
+    
     if args.db:
-        hasher.create_database(args.db, max_workers=args.threads)
+        # **Modification Start**
+        # Extract the folder name to create {foldername}.db
+        folder_path = args.db
+        if not os.path.isdir(folder_path):
+            print(f"Error: '{folder_path}' is not a valid directory.")
+            sys.exit(1)
+        folder_name = os.path.basename(os.path.normpath(folder_path))
+        db_name = f"{folder_name}.db"
+        # Pass the dynamic db_name to create_database
+        hasher.create_database(folder_path, db_name=db_name, max_workers=args.threads)
+        # **Modification End**
     elif args.scan:
+        # Determine the db_name based on the directory containing the database
+        # Assuming the database is in the current directory or specify a way to locate it
+        # Alternatively, you can allow specifying the db path via another argument
+        # For simplicity, we'll assume 'Sigs.db' unless otherwise specified
+        if args.db:
+            # This block is redundant now since args.db is handled above
+            pass
+        else:
+            db_name = 'Sigs.db'
+        if os.path.isfile(db_name):
+            pass
+        else:
+            print(f"Error: Database '{db_name}' does not exist. Please create it using the -db argument first.")
+            sys.exit(1)
         if os.path.isfile(args.scan):
-            matched, results = hasher.scan_file(args.scan, threshold=args.threshold)
+            matched, results = hasher.scan_file(args.scan, db_name=db_name, threshold=args.threshold)
             if matched:
                 print(f"Matches found for {args.scan}:")
-                for match_path, match_similarity in sorted(results, key=lambda x: x[1], reverse=True):
-                    print(f"  {match_path}: {match_similarity:.2%} similarity")
+                for match_signature, match_similarity in sorted(results, key=lambda x: x[1], reverse=True):
+                    print(f"  Similarity: {match_similarity:.2%}")
             else:
                 print(f"No matches found for {args.scan} above {args.threshold:.2%} similarity threshold.")
         elif os.path.isdir(args.scan):
-            hasher.scan_folder(args.scan, threshold=args.threshold, max_workers=args.threads)
+            hasher.scan_folder(args.scan, db_name=db_name, threshold=args.threshold, max_workers=args.threads)
         else:
             print(f"Error: {args.scan} is not a valid file or directory.")
     elif len(args.files) == 1:
         file_path = args.files[0]
         sig = hasher.calculate_signature(file_path)
-        if sig[1]:
-            hasher.show_signature(sig[1], label=f"Signature for {file_path}")
+        if sig:
+            hasher.show_signature(sig, label=f"Signature for {file_path}")
         else:
             print(f"Failed to generate signature for {file_path}")
     elif len(args.files) == 2:
         file1, file2 = args.files
         sig1 = hasher.calculate_signature(file1)
         sig2 = hasher.calculate_signature(file2)
-        if sig1[1] and sig2[1]:
-            hasher.show_signature(sig1[1], label=f"Signature for {file1}")
-            hasher.show_signature(sig2[1], label=f"Signature for {file2}")
-            similarity = hasher.compare_signatures(sig1[1], sig2[1])
+        if sig1 and sig2:
+            hasher.show_signature(sig1, label=f"Signature for {file1}")
+            hasher.show_signature(sig2, label=f"Signature for {file2}")
+            similarity = hasher.compare_signatures(sig1, sig2)
             print(f"\nSimilarity: {similarity:.2%}")
         else:
             print("Failed to generate signatures for both files.")
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     main()
